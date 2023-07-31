@@ -7,6 +7,7 @@ from io import StringIO
 from langchain.vectorstores import Pinecone
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.document_loaders import WebBaseLoader
 
 
 # Setting up Streamlit page configuration
@@ -45,6 +46,10 @@ def load_docs(files):
     # st.write(all_text)
     return all_text  
 
+def select_index():
+    pinecone_index_list = pinecone.list_indexes()
+    return pinecone_index_list
+
 def manage_chat():
 
     if 'clicked' not in st.session_state:
@@ -55,28 +60,37 @@ def manage_chat():
 
     # Initialize Pinecone with API key and environment
     pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+    M_OPTIONS = ["Create New Index", "Use Existing Index", "Delete Index"]
+    manage_opts = st.sidebar.selectbox(label="Select Option", options=M_OPTIONS)
 
-    # Checkbox for the first option to document upload
-    first_opt = st.checkbox('Create New Index to Upload Documents')
-    st.write("")
-    # Checkbox for the second option to document upload
-    second_opt = st.checkbox('Use Existing Index to Upload Documents')
-    st.write("")
-    # Checkbox for the third option to delete existing indexes
-    third_opt = st.checkbox('Delete Any Existing Index')
-    st.write("")
-
-    st.write("---")
-
-    if first_opt:
+    if manage_opts == "Create New Index":
+        st.header("Create New Index to Upload Documents")
+        st.write("---")
+        col1, col2 = st.columns([1,1])
+        doc_ = col1.checkbox("Upload Documents [PDF/TXT]")
+        url_ = col2.checkbox("Upload Website Content [URL]")
         # Prompt the user to upload PDF/TXT files
-        st.write("Upload PDF/TXT Files:")
-        uploaded_files = st.file_uploader("Upload", type=["pdf", "txt"], label_visibility="collapsed", accept_multiple_files = True)
+        try:
+            if doc_:
+                st.write("Upload PDF/TXT Files:")
+                uploaded_files = st.file_uploader("Upload", type=["pdf", "txt"], label_visibility="collapsed", accept_multiple_files = True)
+                if uploaded_files != []:
+                    st.info('Initializing Document Loading...')
+                    documents = load_docs(uploaded_files)
+                    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+                    docs = text_splitter.create_documents(documents)
+                    st.success("Document Loaded Successfully!")
+            elif url_:
+                #web_list = []
+                website_ = st.text_input("Enter website URL:")
+                if website_ != "":
+                    st.info('Initializing Website Loading...')
+                    loader = WebBaseLoader(website_)
+                    loader.requests_kwargs = {'verify':False}
+                    docs = loader.load()
+                    st.success('Website Successfully Loaded!')
 
-        if uploaded_files != []:
-            documents = load_docs(uploaded_files)
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-            docs = text_splitter.create_documents(documents)
+
 
             # Initialize OpenAI embeddings
             embeddings = OpenAIEmbeddings(model = 'text-embedding-ada-002')
@@ -86,7 +100,7 @@ def manage_chat():
             file_container.write(docs)
 
             # Display success message
-            st.success("Document Loaded Successfully!")
+            # st.success("Document Loaded Successfully!")
             pinecone_index = st.text_input("Enter the name of Index: ")
             if pinecone_index != "":
                 st.info('Initializing Index Creation...')
@@ -104,29 +118,53 @@ def manage_chat():
                 
                 # Display success message
                 st.success("Document Uploaded Successfully!")
+        except:
+            st.toast("Select any one option to proceed.")
 
-    elif second_opt:
+    elif manage_opts == "Use Existing Index":
+        st.header("Use Existing Index to Upload Documents")
+        st.write("---")
+        pinecone_index_list = select_index()
+        pinecone_index = st.selectbox(label="Select Index", options = pinecone_index_list )
+        #col1, col2 = st.columns([1,1])
+        # doc_ = col1.checkbox("Upload Documents [PDF/TXT]")
+        # url_ = col2.checkbox("Upload Website Content [URL]")
+        doc_url = st.radio(
+            "Select Content Format",
+            ["Upload Documents [PDF/TXT]", "Upload Website Content [URL]"],
+            key="visibility",
+            horizontal=True,
+            disabled=False
+            )
         # Prompt the user to upload PDF/TXT files
-        st.write("Upload PDF/TXT Files:")
-        uploaded_files = st.file_uploader("Upload", type=["pdf", "txt"], label_visibility="collapsed", accept_multiple_files = True)
+        try:
+            if doc_url == "Upload Documents [PDF/TXT]":
+                st.write("Upload PDF/TXT Files:")
+                uploaded_files = st.file_uploader("Upload", type=["pdf", "txt"], label_visibility="collapsed", accept_multiple_files = True)
+                if uploaded_files != []:
+                    st.info('Initializing Document Loading...')
+                    documents = load_docs(uploaded_files)
+                    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+                    docs = text_splitter.create_documents(documents)
+                    st.success("Document Loaded Successfully!")
 
-        if uploaded_files != []:
-            documents = load_docs(uploaded_files)
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-            docs = text_splitter.create_documents(documents)
+            elif doc_url == "Upload Website Content [URL]":
+                #web_list = []
+                website_ = st.text_input("Enter website URL:")
+                if website_ != "":
+                    st.info('Initializing Website Loading...')
+                    loader = WebBaseLoader(website_)
+                    loader.requests_kwargs = {'verify':False}
+                    docs = loader.load()
+                    st.success('Website Successfully Loaded!')
 
             # Initialize OpenAI embeddings
             embeddings = OpenAIEmbeddings(model = 'text-embedding-ada-002')
             # Display success message
-            st.success("Document Loaded Successfully!")
+            #st.success("Document Loaded Successfully!")
             # Display the uploaded file content
             file_container = st.expander(f"Click here to see your uploaded content:")
             file_container.write(docs)
-
-            time.sleep(10)
-            st.write("Existing Indexes:👇")
-            st.write(pinecone.list_indexes())
-            pinecone_index = st.text_input("Write Name of Existing Index: ")
             up_check = st.checkbox('Check this to Upload Docs in Selected Index')
             if up_check:
                 st.info('Initializing Document Uploading to DB...')
@@ -136,12 +174,18 @@ def manage_chat():
                 
                 # Display success message
                 st.success("Document Uploaded Successfully!")
+        except:
+            st.toast("Select any one option to proceed.")
 
-    elif third_opt:
-        time.sleep(10)
-        st.write("Existing Indexes:👇")
-        st.write(pinecone.list_indexes())
-        pinecone_index = st.text_input("Write Name of Existing Index to delete: ")
+    elif manage_opts == "Delete Index":
+        st.header("Delete Any Existing Index")
+        st.write("---")
+        pinecone_index_list = select_index()
+        pinecone_index = st.selectbox(label="Select Index", options = pinecone_index_list )
+        # time.sleep(10)
+        # st.write("Existing Indexes:👇")
+        # st.write(pinecone.list_indexes())
+        # pinecone_index = st.text_input("Write Name of Existing Index to delete: ")
         st.write(f"The Index named '{pinecone_index}' is selected for deletion.")
         del_check = st.checkbox('Check this to Delete Index')
         if del_check:
