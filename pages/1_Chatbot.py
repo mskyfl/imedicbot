@@ -17,6 +17,10 @@ from langchain.chains.llm import LLMChain
 from langchain.chains import ConversationalRetrievalChain
 from langchain import OpenAI, LLMChain, PromptTemplate
 from langchain.callbacks import get_openai_callback
+from langchain.agents.agent_toolkits import create_retriever_tool
+from langchain.agents import AgentType, initialize_agent, load_tools, Tool
+from langchain.agents.agent_toolkits import create_conversational_retrieval_agent
+from langchain.chains import RetrievalQA
 
 # Setting up Streamlit page configuration
 st.set_page_config(
@@ -67,11 +71,16 @@ def ret(pinecone_index):
 
 @st.cache_resource
 def init_memory():
-    return ConversationSummaryMemory(llm = ChatOpenAI(model_name = model_name),
-                                           memory_key="chat_history", 
-                                           return_messages=True,
-                                           max_token_limit=200, 
-                                           verbose=True)
+    return ConversationBufferWindowMemory(
+                                        k=3, 
+                                        memory_key="chat_history", 
+                                        return_messages=True,
+                                        verbose=True)
+# ConversationSummaryMemory(llm = ChatOpenAI(model_name = model_name),
+#                                            memory_key="chat_history", 
+#                                            return_messages=True,
+#                                            max_token_limit=200, 
+#                                            verbose=True)
 memory = init_memory()
 
 _template = """Given the following conversation and a follow up question, rephrase the follow up question to be a 
@@ -109,48 +118,73 @@ If you don't know the answer, just say that you don't know, don't try to make up
 
 Chat History: {chat_history}
 Question: {human_input}
-Use following context to answer the Question.
+Use following context to provide the most optimal answer to the Question.
 Context:"""
+
+
+
+chatGPT_template = """Assistant is a large language model trained by OpenAI.
+
+Assistant is designed to be able to assist with a wide range of tasks, from answering simple questions to providing in-depth explanations and discussions on a wide range of topics. As a language model, Assistant is able to generate human-like text based on the input it receives, allowing it to engage in natural-sounding conversations and provide responses that are coherent and relevant to the topic at hand.
+
+Assistant is constantly learning and improving, and its capabilities are constantly evolving. It is able to process and understand large amounts of text, and can use this knowledge to provide accurate and informative responses to a wide range of questions. Additionally, Assistant is able to generate its own text based on the input it receives, allowing it to engage in discussions and provide explanations and descriptions on a wide range of topics.
+
+Overall, Assistant is a powerful tool that can help with a wide range of tasks and provide valuable insights and information on a wide range of topics. Whether you need help with a specific question or just want to have a conversation about a particular topic, Assistant is here to assist.
+
+{history}
+Human: {human_input}
+Assistant:"""
+
+chatGPT_prompt = PromptTemplate(input_variables=["history", "human_input"], template=chatGPT_template)
+
+chatgpt_chain = LLMChain(
+    llm=OpenAI(temperature=0),
+    prompt=chatGPT_prompt,
+    verbose=True,
+    memory=ConversationBufferWindowMemory(k=2),
+)
 
 # template = template + pt
 def chat(pinecone_index):
 
     db = ret(pinecone_index)
+    search = DuckDuckGoSearchRun()
+    retriever=db.as_retriever()
+    
+
     @st.cache_resource
     def agent_meth(query, pt):
-        search = DuckDuckGoSearchRun()
         web_res = search.run(query)
-        #doc_res = db.similarity_search(query)
-        #result_string = ' '.join(stri.page_content for stri in doc_res)
-        contex = "\n " + web_res + "\nAssistant:" + pt #+ result_string
+        doc_res = db.similarity_search(query)
+        result_string = ' '.join(stri.page_content for stri in doc_res)
+        output = chatgpt_chain.predict(human_input=query)
+        contex = "\n " + web_res + "\n " + result_string + output +"\nAssistant:" + pt #+ 
         templ = templat + contex
         promptt = PromptTemplate(input_variables=["chat_history", "human_input"], template=templ)
         agent = LLMChain(
             llm=OpenAI(model_name = model_name, temperature=0),
             prompt=promptt,
             verbose=True,
-            memory=ConversationBufferWindowMemory(k=2, 
-                                                  memory_key="chat_history", 
-                                                )
+            memory=memory
                                                   
         )
         
         
-        return agent, contex
-    @st.cache_resource
-    def retr(prompt_temp):
-        llm = ChatOpenAI(model_name = model_name, temperature=0.1)
-        question_generator = LLMChain(llm=llm, prompt=condense_question_prompt_template, memory=memory, verbose=True)
-        doc_chain = load_qa_chain(llm, chain_type="stuff", prompt=qa_prompt, verbose=True)
-        agent = ConversationalRetrievalChain(
-            retriever=db.as_retriever(search_kwargs={'k': 6}),
-            question_generator=question_generator,
-            combine_docs_chain=doc_chain,
-            memory=memory,
-            verbose=True
-        )
+        return agent, contex, web_res, result_string, output
+    # @st.cache_resource
+    # def retr(prompt_temp):
+    #     llm = ChatOpenAI(model_name = model_name, temperature=0.1)
+    #     question_generator = LLMChain(llm=llm, prompt=condense_question_prompt_template, memory=memory, verbose=True)
+    #     doc_chain = load_qa_chain(llm, chain_type="stuff", prompt=qa_prompt, verbose=True)
+    #     agent = ConversationalRetrievalChain(
+    #         retriever=db.as_retriever(search_kwargs={'k': 6}),
+    #         question_generator=question_generator,
+    #         combine_docs_chain=doc_chain,
+    #         memory=memory,
+    #         verbose=True
+    #     )
 
-        return agent
+    #     return agent
 
 
     # Set a default model
@@ -168,9 +202,9 @@ def chat(pinecone_index):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     #agent = conversational_chat()
-    st.sidebar.write("---")
-    st.sidebar.write("Enable Web Access (Excludes Document Access)")
-    meth_sw = st.sidebar.checkbox("Web Search")
+    # st.sidebar.write("---")
+    # st.sidebar.write("Enable Web Access (Excludes Document Access)")
+    #meth_sw = st.sidebar.checkbox("Web Search")
     st.sidebar.write("---")
     #chat_history = []
     if prompt := st.chat_input():
@@ -183,27 +217,40 @@ def chat(pinecone_index):
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             st_callback = StreamlitCallbackHandler(st.container())
-            if meth_sw:
-                agent, context = agent_meth(prompt, pt)
-                #st.sidebar.write(agent.agent.llm_chain.prompt.template)
-                response = agent.predict(human_input=prompt, callbacks=[st_callback])#.run(prompt, callbacks=[st_callback])
-                st.session_state.chat_history.append((prompt, response))
-                message_placeholder.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
-            else:
-                agent = retr(prompt_temp)
-                with st.spinner("Thinking..."):
-                    with get_openai_callback() as cb:
-                        response = agent({'question': prompt, 'chat_history': st.session_state.chat_history})#.run(prompt)#, callbacks=[st_callback])
-                        #st.write(response)
-                        st.session_state.chat_history.append((prompt, response['answer']))
-                        message_placeholder.markdown(response['answer'])
-                        st.session_state.messages.append({"role": "assistant", "content": response['answer']})
-                st.sidebar.header("Total Token Usage:")
-                st.sidebar.write(f"""
-                        <div style="text-align: left;">
-                            <h3>   {cb.total_tokens}</h3>
-                        </div> """, unsafe_allow_html=True)
+            #if meth_sw:
+            agent, contex, web_res, result_string, output = agent_meth(prompt, pt)
+            with st.spinner("Thinking..."):
+                with get_openai_callback() as cb:
+                    #st.sidebar.write(agent.agent.llm_chain.prompt.template)
+                    response = agent.predict(human_input=prompt, callbacks=[st_callback])#.run(prompt, callbacks=[st_callback])
+                    st.session_state.chat_history.append((prompt, response))
+                    message_placeholder.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+            st.sidebar.header("Total Token Usage:")
+            st.sidebar.write(f"""
+                    <div style="text-align: left;">
+                        <h3>   {cb.total_tokens}</h3>
+                    </div> """, unsafe_allow_html=True)
+            # st.sidebar.write("Information Processing: ", "---")
+            # st.sidebar.write("Web Results: ", web_res)
+            # st.sidebar.write("---")
+            # st.sidebar.write("Database Results: ", result_string)
+            # st.sidebar.write("---")
+            # st.sidebar.write("ChatGPT Results: ", output)
+            # else:
+            #     agent = retr(prompt_temp)
+            #     with st.spinner("Thinking..."):
+            #         with get_openai_callback() as cb:
+            #             response = agent({'question': prompt, 'chat_history': st.session_state.chat_history})#.run(prompt)#, callbacks=[st_callback])
+            #             #st.write(response)
+            #             st.session_state.chat_history.append((prompt, response['answer']))
+            #             message_placeholder.markdown(response['answer'])
+            #             st.session_state.messages.append({"role": "assistant", "content": response['answer']})
+            #     st.sidebar.header("Total Token Usage:")
+            #     st.sidebar.write(f"""
+            #             <div style="text-align: left;">
+            #                 <h3>   {cb.total_tokens}</h3>
+            #             </div> """, unsafe_allow_html=True)
 if pinecone_index != "":
     chat(pinecone_index)
     #st.sidebar.write(st.session_state.messages)
